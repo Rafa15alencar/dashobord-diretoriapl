@@ -25,6 +25,12 @@ MONTH_SHEETS = {
     "DEZEMBRO": "CONTRATOS DEZEMBRO",
 }
 MONTH_ORDER = list(MONTH_SHEETS)
+MONTH_LABELS = {
+    "SETEMBRO": "Setembro",
+    "OUTUBRO": "Outubro",
+    "NOVEMBRO": "Novembro",
+    "DEZEMBRO": "Dezembro",
+}
 CONTRACT_COLUMNS = [
     "MES",
     "QTDE",
@@ -182,14 +188,19 @@ def load_google_data() -> tuple[pd.DataFrame, pd.DataFrame, str]:
     return summary_df, contracts_df, fetched_at
 
 
-logo_column, title_column, refresh_column = st.columns(
-    [1.35, 4.65, 1.7], vertical_alignment="center"
+logo_column, title_column, period_column, refresh_column = st.columns(
+    [1.25, 3.5, 1.8, 1.55], vertical_alignment="center"
 )
 with logo_column:
     st.image(str(LOGO_PATH), width=165)
 with title_column:
     st.title("Painel de Resultados Comerciais")
     st.caption("Paulo Lopes Advogados • Acompanhamento comercial 2026")
+with period_column:
+    selected_period = st.selectbox(
+        "Período",
+        ["Total Geral"] + [MONTH_LABELS[month] for month in MONTH_ORDER],
+    )
 with refresh_column:
     refresh = st.button("Atualizar Dados", type="primary", width="stretch")
 if refresh:
@@ -213,20 +224,47 @@ summary["MES"] = pd.Categorical(
 summary = summary.sort_values("MES")
 st.caption(f"Fonte: Google Sheets • Atualizado em {fetched_at}")
 
-total_contracts = int(summary["CONTRATOS_FECHADOS"].sum())
-total_leads = int(summary["LEADS_RECEBIDOS"].sum())
-total_value = float(summary["VALOR_CONTRATOS"].sum())
+if selected_period == "Total Geral":
+    period_summary = summary.copy()
+    period_contracts = contracts.copy()
+else:
+    selected_month = next(
+        month for month, label in MONTH_LABELS.items() if label == selected_period
+    )
+    period_summary = summary[summary["MES"] == selected_month].copy()
+    period_contracts = contracts[contracts["MES"] == selected_month].copy()
 
-cards = st.columns(4)
-cards[0].metric("Leads recebidos", f"{total_leads:,}".replace(",", "."))
-cards[1].metric("Contratos fechados", f"{total_contracts:,}".replace(",", "."))
+period_leads = int(period_summary["LEADS_RECEBIDOS"].sum())
+period_contract_count = int(period_summary["CONTRATOS_FECHADOS"].sum())
+period_value = float(period_summary["VALOR_CONTRATOS"].sum())
+period_entries = float(period_summary["ENTRADAS"].sum())
+period_target = float(period_summary["META"].sum())
+period_conversion = (
+    period_contract_count / period_leads if period_leads else 0.0
+)
+period_target_progress = (
+    period_entries / period_target if period_target else 0.0
+)
+
+cards = st.columns(5)
+cards[0].metric("Leads recebidos", f"{period_leads:,}".replace(",", "."))
+cards[1].metric("Contratos fechados", f"{period_contract_count:,}".replace(",", "."))
 cards[2].metric(
     "Valor contratado",
-    f"R$ {total_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+    f"R$ {period_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
 )
 cards[3].metric(
     "Taxa de conversão",
-    f"{(total_contracts / total_leads * 100 if total_leads else 0):.1f}%",
+    f"{period_conversion:.1%}",
+)
+cards[4].metric(
+    "Meta atingida (entradas)",
+    f"{period_target_progress:.1%}",
+    delta=(
+        f"R$ {period_entries:,.0f} / R$ {period_target:,.0f}"
+        .replace(",", ".")
+    ),
+    delta_color="off",
 )
 
 st.divider()
@@ -235,7 +273,7 @@ left, right = st.columns(2)
 
 with left:
     fig_contracts = px.bar(
-        summary,
+        period_summary,
         x="MES",
         y="CONTRATOS_FECHADOS",
         text="CONTRATOS_FECHADOS",
@@ -249,7 +287,7 @@ with left:
 
 with right:
     fig_value = px.bar(
-        summary,
+        period_summary,
         x="MES",
         y=["ENTRADAS", "RECORRENCIA"],
         title="Composição dos valores",
@@ -263,7 +301,7 @@ left, right = st.columns(2)
 
 with left:
     fig_target = px.bar(
-        summary,
+        period_summary,
         x="MES",
         y=["META", "ENTRADAS"],
         title="Meta versus entradas realizadas",
@@ -274,10 +312,10 @@ with left:
     st.plotly_chart(fig_target, width="stretch")
 
 with right:
-    if contracts.empty:
+    if period_contracts.empty:
         st.info("Não há linhas de contratos disponíveis.")
     else:
-        products = contracts.groupby("PRODUTO", dropna=False).size().reset_index(name="CONTRATOS")
+        products = period_contracts.groupby("PRODUTO", dropna=False).size().reset_index(name="CONTRATOS")
         products = products[products["PRODUTO"].astype(str).str.strip() != ""]
         fig_products = px.pie(
             products,
@@ -289,7 +327,7 @@ with right:
         st.plotly_chart(fig_products, width="stretch")
 
 st.subheader("Resumo mensal")
-display_summary = summary[
+display_summary = period_summary[
     [
         "MES",
         "LEADS_RECEBIDOS",
@@ -303,6 +341,11 @@ display_summary = summary[
         "DIFERENCA_META",
     ]
 ].copy()
+display_summary["MES"] = display_summary["MES"].astype(str).map(MONTH_LABELS)
+for column in ["LEADS_RECEBIDOS", "CONTRATOS_FECHADOS"]:
+    display_summary[column] = display_summary[column].map(
+        lambda value: f"{int(value):,}".replace(",", ".")
+    )
 display_summary["CONVERSAO"] = display_summary["CONVERSAO"].map(
     lambda value: f"{value:.1%}"
 )
@@ -320,7 +363,23 @@ for column in currency_columns:
     display_summary[column] = display_summary[column].map(
         lambda value: f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     )
+if selected_period == "Total Geral":
+    total_row = {
+        "MES": "TOTAL GERAL",
+        "LEADS_RECEBIDOS": f"{period_leads:,}".replace(",", "."),
+        "CONTRATOS_FECHADOS": f"{period_contract_count:,}".replace(",", "."),
+        "CONVERSAO": f"{period_conversion:.1%}",
+        "VALOR_CONTRATOS": f"R$ {period_value:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "ENTRADAS": f"R$ {period_entries:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "RECORRENCIA": f"R$ {period_summary['RECORRENCIA'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "META": f"R$ {period_target:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "REALIZADO_PERCENTUAL": f"{period_target_progress:.1%}",
+        "DIFERENCA_META": f"R$ {period_entries - period_target:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+    }
+    display_summary = pd.concat(
+        [display_summary, pd.DataFrame([total_row])], ignore_index=True
+    )
 st.dataframe(display_summary, width="stretch", hide_index=True)
 
 with st.expander("Ver contratos"):
-    st.dataframe(contracts, width="stretch", hide_index=True)
+    st.dataframe(period_contracts, width="stretch", hide_index=True)
